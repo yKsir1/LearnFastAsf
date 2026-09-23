@@ -1,24 +1,48 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import React, { useState } from 'react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 import AuthShell from '../components/AuthShell';
+import { login } from '@/lib/auth';
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
 });
 
 function LoginPage() {
+  const navigate = useNavigate();
+
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Đăng nhập:", { identifier, password });
-    alert("Đăng nhập thành công!");
+    setError(null);
+    setLoading(true);
+
+    try {
+      await login({ identifier, password });
+      navigate({ to: '/' });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Đăng nhập thất bại. Vui lòng thử lại.',
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <AuthShell title="Chào mừng trở lại" subtitle="Đăng nhập vào tài khoản LearnFast của bạn">
       <form onSubmit={handleSubmit} className="space-y-5">
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm font-medium text-destructive">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         <div>
           <label className="block mb-2 text-sm font-semibold text-foreground">Tên người dùng hoặc Email</label>
           <input 
@@ -27,6 +51,7 @@ function LoginPage() {
             onChange={(e) => setIdentifier(e.target.value)}
             className="w-full px-4 py-3 border border-border rounded-xl focus:ring-2 focus:ring-primary outline-none transition bg-background text-foreground"
             placeholder="Nhập username hoặc email"
+            autoComplete="username"
             required 
           />
         </div>
@@ -42,15 +67,18 @@ function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             className="w-full px-4 py-3 border border-border rounded-xl focus:ring-2 focus:ring-primary outline-none transition bg-background text-foreground"
             placeholder="••••••••"
+            autoComplete="current-password"
             required 
           />
         </div>
 
         <button 
           type="submit" 
-          className="w-full bg-primary text-primary-foreground py-3 rounded-xl font-semibold hover:bg-primary-deep transition shadow-lg shadow-primary/20"
+          disabled={loading}
+          className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3 rounded-xl font-semibold hover:bg-primary-deep transition shadow-lg shadow-primary/20 disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          Đăng nhập
+          {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+          {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
         </button>
       </form>
 
