@@ -60,6 +60,17 @@ function makeId(): string {
   return `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function friendlyError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("row-level security") || m.includes("rls")) {
+    return "Bảng todos chưa có chính sách RLS. Hãy chạy supabase/setup-all-rls.sql trong Supabase SQL Editor.";
+  }
+  if (m.includes("foreign key")) {
+    return "Tài khoản chưa có hồ sơ (profiles). Hãy chạy supabase/setup-all-rls.sql trong Supabase SQL Editor.";
+  }
+  return message;
+}
+
 // ---------------------------------------------------------------------------
 // Anonymous (not signed in) persistence using localStorage.
 // ---------------------------------------------------------------------------
@@ -88,16 +99,19 @@ function saveLocalTodos(todos: Todo[]): void {
 /**
  * User-scoped to-do list. Signed-in users are backed by Supabase (`todos`
  * table); anonymous users fall back to localStorage so the to-do list still
- * works without an account.
+ * works without an account. `error` carries a human-readable message when a
+ * Supabase write fails (e.g. missing RLS policies).
  */
 export function useTodos() {
   const { user } = useAuth();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) {
       setTodos(loadLocalTodos());
+      setError(null);
       setLoading(false);
       return;
     }
@@ -110,8 +124,10 @@ export function useTodos() {
 
     if (error) {
       console.error("[useTodos] load failed:", error);
+      setError(friendlyError(error.message));
     } else if (data) {
       setTodos((data as TodoRow[]).map(rowToTodo));
+      setError(null);
     }
     setLoading(false);
   }, [user]);
@@ -127,6 +143,7 @@ export function useTodos() {
         const next = [...todos, newTodo];
         setTodos(next);
         saveLocalTodos(next);
+        setError(null);
         return;
       }
 
@@ -145,9 +162,13 @@ export function useTodos() {
 
       if (error) {
         console.error("[useTodos] add failed:", error);
+        setError(friendlyError(error.message));
         return;
       }
-      if (data) setTodos((prev) => [...prev, rowToTodo(data as TodoRow)]);
+      if (data) {
+        setTodos((prev) => [...prev, rowToTodo(data as TodoRow)]);
+        setError(null);
+      }
     },
     [todos, user],
   );
@@ -158,6 +179,7 @@ export function useTodos() {
         const next = todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
         setTodos(next);
         saveLocalTodos(next);
+        setError(null);
         return;
       }
 
@@ -172,9 +194,11 @@ export function useTodos() {
 
       if (error) {
         console.error("[useTodos] toggle failed:", error);
+        setError(friendlyError(error.message));
         return;
       }
       setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: nextDone } : t)));
+      setError(null);
     },
     [todos, user],
   );
@@ -185,15 +209,18 @@ export function useTodos() {
         const next = todos.filter((t) => t.id !== id);
         setTodos(next);
         saveLocalTodos(next);
+        setError(null);
         return;
       }
 
       const { error } = await supabase.from("todos").delete().eq("id", id);
       if (error) {
         console.error("[useTodos] remove failed:", error);
+        setError(friendlyError(error.message));
         return;
       }
       setTodos((prev) => prev.filter((t) => t.id !== id));
+      setError(null);
     },
     [todos, user],
   );
@@ -203,6 +230,7 @@ export function useTodos() {
       const next = todos.filter((t) => !t.done);
       setTodos(next);
       saveLocalTodos(next);
+      setError(null);
       return;
     }
 
@@ -212,10 +240,12 @@ export function useTodos() {
     const { error } = await supabase.from("todos").delete().in("id", doneIds);
     if (error) {
       console.error("[useTodos] clearDone failed:", error);
+      setError(friendlyError(error.message));
       return;
     }
     setTodos((prev) => prev.filter((t) => !t.done));
+    setError(null);
   }, [todos, user]);
 
-  return { todos, loading, add, toggle, remove, clearDone };
+  return { todos, loading, error, add, toggle, remove, clearDone };
 }
