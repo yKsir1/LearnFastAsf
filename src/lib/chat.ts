@@ -180,3 +180,34 @@ export async function deleteAllThreads(userId: string): Promise<void> {
   const { error } = await supabase.from("chat_threads").delete().eq("user_id", userId);
   if (error) console.error("[chat] deleteAllThreads failed:", error);
 }
+
+// ---------------------------------------------------------------------------
+// Anonymous (not signed in) persistence using localStorage.
+// Signed-in users use Supabase; anonymous users keep their chat on this device.
+// ---------------------------------------------------------------------------
+
+const ANON_STORAGE_KEY = "studia_chat_anonymous";
+
+export function loadAnonymousSessions(): ChatThread[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const raw = window.localStorage.getItem(ANON_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ChatThread[]) : [];
+  } catch (error) {
+    console.error("[chat] loadAnonymousSessions failed:", error);
+    return [];
+  }
+}
+
+export function saveAnonymousSessions(sessions: ChatThread[]): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(ANON_STORAGE_KEY, JSON.stringify(sessions));
+  } catch (error) {
+    console.error("[chat] saveAnonymousSessions failed:", error);
+  }
+}

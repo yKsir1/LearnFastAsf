@@ -31,10 +31,12 @@ import {
   createThread,
   deleteAllThreads,
   deleteThread,
+  loadAnonymousSessions,
   loadMessages,
   loadThreads,
   persistMessage,
   renameThread,
+  saveAnonymousSessions,
   type ChatMessage,
   type ChatThread,
 } from "@/lib/chat";
@@ -101,6 +103,7 @@ export function AIPage() {
   const [deleteTarget, setDeleteTarget] = useState<
     { type: "thread"; id: string } | { type: "all" } | null
   >(null);
+  const [hydrated, setHydrated] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -134,11 +137,20 @@ export function AIPage() {
       if (authLoading) return;
 
       if (!user) {
-        const s = await createNewChat();
-        if (!cancelled) {
-          setSessions([s]);
-          setActiveSessionId(s.id);
+        const local = loadAnonymousSessions();
+        if (cancelled) return;
+
+        if (local.length > 0) {
+          setSessions(local);
+          setActiveSessionId(local[0].id);
+        } else {
+          const s = await createNewChat();
+          if (!cancelled) {
+            setSessions([s]);
+            setActiveSessionId(s.id);
+          }
         }
+        setHydrated(true);
         return;
       }
 
@@ -150,6 +162,7 @@ export function AIPage() {
         if (!cancelled) {
           setSessions([s]);
           setActiveSessionId(s.id);
+          setHydrated(true);
         }
         return;
       }
@@ -157,6 +170,7 @@ export function AIPage() {
       setSessions(threads);
       const firstId = threads[0].id;
       setActiveSessionId(firstId);
+      setHydrated(true);
 
       const messages = await loadMessages(user.id, firstId);
       if (!cancelled) {
@@ -169,6 +183,13 @@ export function AIPage() {
       cancelled = true;
     };
   }, [user, authLoading, createNewChat]);
+
+  // Lưu chat ẩn danh xuống localStorage sau khi đã khởi tạo xong.
+  useEffect(() => {
+    if (hydrated && !user) {
+      saveAnonymousSessions(sessions);
+    }
+  }, [sessions, user, hydrated]);
 
   const handleSelectThread = async (id: string) => {
     setActiveSessionId(id);
