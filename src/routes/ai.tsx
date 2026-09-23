@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   Plus,
@@ -72,9 +82,9 @@ function SessionItem({
         onClick={onDelete}
         title="Xóa cuộc hội thoại"
         aria-label="Xóa cuộc hội thoại"
-        className="mr-1.5 shrink-0 rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        className="mr-1.5 shrink-0 rounded-lg p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        <X className="h-3.5 w-3.5" />
       </button>
     </div>
   );
@@ -88,6 +98,9 @@ export function AIPage() {
   const [inputText, setInputText] = useState("");
   const [selectedImage, setSelectedImage] = useState<SelectedImage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<
+    { type: "thread"; id: string } | { type: "all" } | null
+  >(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -194,15 +207,24 @@ export function AIPage() {
     }
   };
 
-  const handleDeleteAll = async () => {
-    const ok = window.confirm("Xóa tất cả cuộc trò chuyện? Hành động này không thể hoàn tác.");
-    if (!ok) return;
-
+  const performDeleteAll = async () => {
     if (user) await deleteAllThreads(user.id);
 
     const s = await createNewChat();
     setSessions([s]);
     setActiveSessionId(s.id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteTarget(null);
+
+    if (target.type === "all") {
+      await performDeleteAll();
+    } else {
+      await handleDeleteThread(target.id);
+    }
   };
 
   const fileToGenerativePart = (img: SelectedImage) => {
@@ -334,7 +356,7 @@ export function AIPage() {
             {sessions.length > 0 && (
               <button
                 type="button"
-                onClick={() => void handleDeleteAll()}
+                onClick={() => setDeleteTarget({ type: "all" })}
                 className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border/60 px-3 py-2 text-xs font-bold text-muted-foreground transition hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -357,7 +379,7 @@ export function AIPage() {
                       session={s}
                       active={s.id === activeSessionId}
                       onSelect={() => void handleSelectThread(s.id)}
-                      onDelete={() => void handleDeleteThread(s.id)}
+                      onDelete={() => setDeleteTarget({ type: "thread", id: s.id })}
                     />
                   ))}
               </div>
@@ -376,7 +398,7 @@ export function AIPage() {
                         session={s}
                         active={s.id === activeSessionId}
                         onSelect={() => void handleSelectThread(s.id)}
-                        onDelete={() => void handleDeleteThread(s.id)}
+                        onDelete={() => setDeleteTarget({ type: "thread", id: s.id })}
                       />
                     ))}
                 </div>
@@ -551,6 +573,31 @@ export function AIPage() {
           </div>
         </main>
       </div>
+
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa cuộc trò chuyện?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.type === "all"
+                ? "Bạn có chắc muốn xóa tất cả cuộc trò chuyện? Hành động này không thể hoàn tác."
+                : "Bạn có chắc muốn xóa cuộc trò chuyện này? Hành động này không thể hoàn tác."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => void confirmDelete()}
+            >
+              Xóa
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   );
 }
