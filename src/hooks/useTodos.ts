@@ -3,6 +3,8 @@ import { supabase } from "@/intergrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import type { Todo } from "@/data/mock";
 
+const ANON_TODOS_KEY = "studia_todos_anonymous";
+
 const PRIORITY_TO_NUMBER: Record<Todo["priority"], number> = {
   cao: 3,
   vừa: 2,
@@ -51,9 +53,42 @@ function rowToTodo(row: TodoRow): Todo {
   };
 }
 
+function makeId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Anonymous (not signed in) persistence using localStorage.
+// ---------------------------------------------------------------------------
+function loadLocalTodos(): Todo[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(ANON_TODOS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Todo[]) : [];
+  } catch (error) {
+    console.error("[useTodos] load local failed:", error);
+    return [];
+  }
+}
+
+function saveLocalTodos(todos: Todo[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ANON_TODOS_KEY, JSON.stringify(todos));
+  } catch (error) {
+    console.error("[useTodos] save local failed:", error);
+  }
+}
+
 /**
- * User-scoped to-do list backed by Supabase. Todos are loaded for the current
- * user and every add/toggle/remove/clear is persisted to the `todos` table.
+ * User-scoped to-do list. Signed-in users are backed by Supabase (`todos`
+ * table); anonymous users fall back to localStorage so the to-do list still
+ * works without an account.
  */
 export function useTodos() {
   const { user } = useAuth();
@@ -62,7 +97,7 @@ export function useTodos() {
 
   const load = useCallback(async () => {
     if (!user) {
-      setTodos([]);
+      setTodos(loadLocalTodos());
       setLoading(false);
       return;
     }
@@ -87,7 +122,14 @@ export function useTodos() {
 
   const add = useCallback(
     async (todo: Omit<Todo, "id" | "done">) => {
-      if (!user) return;
+      if (!user) {
+        const newTodo: Todo = { id: makeId(), done: false, ...todo };
+        const next = [...todos, newTodo];
+        setTodos(next);
+        saveLocalTodos(next);
+        return;
+      }
+
       const { data, error } = await supabase
         .from("todos")
         .insert({
@@ -107,11 +149,18 @@ export function useTodos() {
       }
       if (data) setTodos((prev) => [...prev, rowToTodo(data as TodoRow)]);
     },
-    [user],
+    [todos, user],
   );
 
   const toggle = useCallback(
     async (id: string) => {
+      if (!user) {
+        const next = todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+        setTodos(next);
+        saveLocalTodos(next);
+        return;
+      }
+
       const target = todos.find((t) => t.id === id);
       if (!target) return;
       const nextDone = !target.done;
@@ -127,19 +176,36 @@ export function useTodos() {
       }
       setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: nextDone } : t)));
     },
-    [todos],
+    [todos, user],
   );
 
-  const remove = useCallback(async (id: string) => {
-    const { error } = await supabase.from("todos").delete().eq("id", id);
-    if (error) {
-      console.error("[useTodos] remove failed:", error);
-      return;
-    }
-    setTodos((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const remove = useCallback(
+    async (id: string) => {
+      if (!user) {
+        const next = todos.filter((t) => t.id !== id);
+        setTodos(next);
+        saveLocalTodos(next);
+        return;
+      }
+
+      const { error } = await supabase.from("todos").delete().eq("id", id);
+      if (error) {
+        console.error("[useTodos] remove failed:", error);
+        return;
+      }
+      setTodos((prev) => prev.filter((t) => t.id !== id));
+    },
+    [todos, user],
+  );
 
   const clearDone = useCallback(async () => {
+    if (!user) {
+      const next = todos.filter((t) => !t.done);
+      setTodos(next);
+      saveLocalTodos(next);
+      return;
+    }
+
     const doneIds = todos.filter((t) => t.done).map((t) => t.id);
     if (doneIds.length === 0) return;
 
@@ -149,7 +215,7 @@ export function useTodos() {
       return;
     }
     setTodos((prev) => prev.filter((t) => !t.done));
-  }, [todos]);
+  }, [todos, user]);
 
   return { todos, loading, add, toggle, remove, clearDone };
 }
