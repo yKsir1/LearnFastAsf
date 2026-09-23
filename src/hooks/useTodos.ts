@@ -5,6 +5,9 @@ import type { Todo } from "@/data/mock";
 
 const ANON_TODOS_KEY = "studia_todos_anonymous";
 
+const SYNC_WARNING =
+  "Đã lưu trên thiết bị này. Để đồng bộ lên đám mây, hãy chạy supabase/setup-all-rls.sql trong Supabase SQL Editor.";
+
 const PRIORITY_TO_NUMBER: Record<Todo["priority"], number> = {
   cao: 3,
   vừa: 2,
@@ -57,22 +60,16 @@ function makeId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
-  return `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function friendlyError(message: string): string {
-  const m = message.toLowerCase();
-  if (m.includes("row-level security") || m.includes("rls")) {
-    return "Bảng todos chưa có chính sách RLS. Hãy chạy supabase/setup-all-rls.sql trong Supabase SQL Editor.";
-  }
-  if (m.includes("foreign key")) {
-    return "Tài khoản chưa có hồ sơ (profiles). Hãy chạy supabase/setup-all-rls.sql trong Supabase SQL Editor.";
-  }
-  return message;
+  // RFC 4122 v4 fallback (still a valid uuid for Supabase).
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Anonymous (not signed in) persistence using localStorage.
+// Local (device) persistence — used by everyone as the reliable fallback.
 // ---------------------------------------------------------------------------
 function loadLocalTodos(): Todo[] {
   if (typeof window === "undefined") return [];
@@ -97,10 +94,11 @@ function saveLocalTodos(todos: Todo[]): void {
 }
 
 /**
- * User-scoped to-do list. Signed-in users are backed by Supabase (`todos`
- * table); anonymous users fall back to localStorage so the to-do list still
- * works without an account. `error` carries a human-readable message when a
- * Supabase write fails (e.g. missing RLS policies).
+ * To-do list that always works:
+ *   • Local state + localStorage are the source of truth for the UI.
+ *   • When signed in, changes are also synced to Supabase (best-effort).
+ *   • If Supabase is not configured (e.g. missing RLS policies), everything
+ *     still saves locally and the app keeps working.
  */
 export function useTodos() {
   const { user } = useAuth();
@@ -108,10 +106,16 @@ export function useTodos() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const applyLocal = useCallback((next: Todo[]) => {
+    setTodos(next);
+    saveLocalTodos(next);
+  }, []);
+
   const load = useCallback(async () => {
+    const local = loadLocalTodos();
+
     if (!user) {
-      setTodos(loadLocalTodos());
-      setError(null);
+      setTodos(local);
       setLoading(false);
       return;
     }
@@ -122,12 +126,12 @@ export function useTodos() {
       .eq("user_id", user.id)
       .order("due_at", { ascending: true, nullsFirst: false });
 
-    if (error) {
-      console.error("[useTodos] load failed:", error);
-      setError(friendlyError(error.message));
-    } else if (data) {
+    if (!error && data && data.length > 0) {
       setTodos((data as TodoRow[]).map(rowToTodo));
-      setError(null);
+    } else {
+      // Supabase empty or unavailable — fall back to what's on this device.
+      if (error) console.error("[useTodos] load failed:", error);
+      setTodos(local);
     }
     setLoading(false);
   }, [user]);
@@ -138,114 +142,86 @@ export function useTodos() {
 
   const add = useCallback(
     async (todo: Omit<Todo, "id" | "done">) => {
+      const newTodo: Todo = { id: makeId(), done: false, ...todo };
+      applyLocal([...todos, newTodo]);
+
       if (!user) {
-        const newTodo: Todo = { id: makeId(), done: false, ...todo };
-        const next = [...todos, newTodo];
-        setTodos(next);
-        saveLocalTodos(next);
         setError(null);
         return;
       }
 
-      const { data, error } = await supabase
-        .from("todos")
-        .insert({
-          title: todo.title,
-          category: todo.tag,
-          priority: PRIORITY_TO_NUMBER[todo.priority] ?? 2,
-          completed: false,
-          due_at: timeToIso(todo.time),
-          user_id: user.id,
-        })
-        .select("*")
-        .single();
+      const { error } = await supabase.from("todos").insert({
+        id: newTodo.id,
+        title: todo.title,
+        category: todo.tag,
+        priority: PRIORITY_TO_NUMBER[todo.priority] ?? 2,
+        completed: false,
+        due_at: timeToIso(todo.time),
+        user_id: user.id,
+      });
 
-      if (error) {
-        console.error("[useTodos] add failed:", error);
-        setError(friendlyError(error.message));
-        return;
-      }
-      if (data) {
-        setTodos((prev) => [...prev, rowToTodo(data as TodoRow)]);
-        setError(null);
-      }
+      setError(error ? SYNC_WARNING : null);
+      if (error) console.error("[useTodos] cloud add failed:", error);
     },
-    [todos, user],
+    [todos, user, applyLocal],
   );
 
   const toggle = useCallback(
     async (id: string) => {
-      if (!user) {
-        const next = todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
-        setTodos(next);
-        saveLocalTodos(next);
-        setError(null);
-        return;
-      }
-
       const target = todos.find((t) => t.id === id);
       if (!target) return;
       const nextDone = !target.done;
+      applyLocal(todos.map((t) => (t.id === id ? { ...t, done: nextDone } : t)));
+
+      if (!user) {
+        setError(null);
+        return;
+      }
 
       const { error } = await supabase
         .from("todos")
         .update({ completed: nextDone })
         .eq("id", id);
 
-      if (error) {
-        console.error("[useTodos] toggle failed:", error);
-        setError(friendlyError(error.message));
-        return;
-      }
-      setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: nextDone } : t)));
-      setError(null);
+      setError(error ? SYNC_WARNING : null);
+      if (error) console.error("[useTodos] cloud toggle failed:", error);
     },
-    [todos, user],
+    [todos, user, applyLocal],
   );
 
   const remove = useCallback(
     async (id: string) => {
+      applyLocal(todos.filter((t) => t.id !== id));
+
       if (!user) {
-        const next = todos.filter((t) => t.id !== id);
-        setTodos(next);
-        saveLocalTodos(next);
         setError(null);
         return;
       }
 
       const { error } = await supabase.from("todos").delete().eq("id", id);
-      if (error) {
-        console.error("[useTodos] remove failed:", error);
-        setError(friendlyError(error.message));
-        return;
-      }
-      setTodos((prev) => prev.filter((t) => t.id !== id));
-      setError(null);
+
+      setError(error ? SYNC_WARNING : null);
+      if (error) console.error("[useTodos] cloud remove failed:", error);
     },
-    [todos, user],
+    [todos, user, applyLocal],
   );
 
   const clearDone = useCallback(async () => {
+    const doneIds = todos.filter((t) => t.done).map((t) => t.id);
+    if (doneIds.length === 0) return;
+
+    applyLocal(todos.filter((t) => !t.done));
+
     if (!user) {
-      const next = todos.filter((t) => !t.done);
-      setTodos(next);
-      saveLocalTodos(next);
       setError(null);
       return;
     }
 
-    const doneIds = todos.filter((t) => t.done).map((t) => t.id);
-    if (doneIds.length === 0) return;
-
     const { error } = await supabase.from("todos").delete().in("id", doneIds);
-    if (error) {
-      console.error("[useTodos] clearDone failed:", error);
-      setError(friendlyError(error.message));
-      return;
-    }
-    setTodos((prev) => prev.filter((t) => !t.done));
-    setError(null);
-  }, [todos, user]);
+
+    setError(error ? SYNC_WARNING : null);
+    if (error) console.error("[useTodos] cloud clearDone failed:", error);
+  }, [todos, user, applyLocal]);
 
   return { todos, loading, error, add, toggle, remove, clearDone };
 }
