@@ -112,10 +112,9 @@ export function useTodos() {
   }, []);
 
   const load = useCallback(async () => {
-    const local = loadLocalTodos();
-
     if (!user) {
-      setTodos(local);
+      setTodos(loadLocalTodos());
+      setError(null);
       setLoading(false);
       return;
     }
@@ -126,13 +125,39 @@ export function useTodos() {
       .eq("user_id", user.id)
       .order("due_at", { ascending: true, nullsFirst: false });
 
-    if (!error && data && data.length > 0) {
-      setTodos((data as TodoRow[]).map(rowToTodo));
-    } else {
-      // Supabase empty or unavailable — fall back to what's on this device.
-      if (error) console.error("[useTodos] load failed:", error);
-      setTodos(local);
+    if (error) {
+      // Cloud unavailable — fall back to what's on this device.
+      console.error("[useTodos] load failed:", error);
+      setTodos(loadLocalTodos());
+      setError("Không kết nối được đám mây. Đang hiển thị dữ liệu trên thiết bị.");
+      setLoading(false);
+      return;
     }
+
+    const cloud = (data as TodoRow[]).map(rowToTodo);
+    const local = loadLocalTodos();
+    const cloudIds = new Set(cloud.map((t) => t.id));
+
+    // Migrate device-only tasks to the cloud (covers tasks created before
+    // RLS policies were configured).
+    const missing = local.filter((t) => !cloudIds.has(t.id));
+    for (const t of missing) {
+      const { error: insertError } = await supabase.from("todos").insert({
+        id: t.id,
+        title: t.title,
+        category: t.tag,
+        priority: PRIORITY_TO_NUMBER[t.priority] ?? 2,
+        completed: t.done,
+        due_at: timeToIso(t.time),
+        user_id: user.id,
+      });
+      if (insertError) console.error("[useTodos] migrate failed:", insertError);
+    }
+
+    const merged = [...cloud, ...missing];
+    setTodos(merged);
+    saveLocalTodos(merged);
+    setError(null);
     setLoading(false);
   }, [user]);
 
